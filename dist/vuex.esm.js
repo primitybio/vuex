@@ -1,6 +1,6 @@
 /**
  * vuex v3.0.1
- * (c) 2017 Evan You
+ * (c) 2018 Evan You
  * @license MIT
  */
 var applyMixin = function (Vue) {
@@ -307,11 +307,6 @@ var Store = function Store (options) {
   var plugins = options.plugins; if ( plugins === void 0 ) plugins = [];
   var strict = options.strict; if ( strict === void 0 ) strict = false;
 
-  var state = options.state; if ( state === void 0 ) state = {};
-  if (typeof state === 'function') {
-    state = state() || {};
-  }
-
   // store internal state
   this._committing = false;
   this._actions = Object.create(null);
@@ -337,6 +332,8 @@ var Store = function Store (options) {
 
   // strict mode
   this.strict = strict;
+
+  var state = this._modules.root.state;
 
   // init root module.
   // this also recursively registers all sub-modules
@@ -419,11 +416,19 @@ Store.prototype.dispatch = function dispatch (_type, _payload) {
     return
   }
 
-  this._actionSubscribers.forEach(function (sub) { return sub(action, this$1.state); });
+  this._actionSubscribers
+    .filter(function (sub) { return sub.before; })
+    .forEach(function (sub) { return sub.before(action, this$1.state); });
 
-  return entry.length > 1
+  var result = entry.length > 1
     ? Promise.all(entry.map(function (handler) { return handler(payload); }))
-    : entry[0](payload)
+    : entry[0](payload);
+
+  result.then(function () { return this$1._actionSubscribers
+    .filter(function (sub) { return sub.after; })
+    .forEach(function (sub) { return sub.after(action, this$1.state); }); });
+
+  return result
 };
 
 Store.prototype.subscribe = function subscribe (fn) {
@@ -431,7 +436,8 @@ Store.prototype.subscribe = function subscribe (fn) {
 };
 
 Store.prototype.subscribeAction = function subscribeAction (fn) {
-  return genericSubscribe(fn, this._actionSubscribers)
+  var subs = typeof fn === 'function' ? { before: fn } : fn;
+  return genericSubscribe(subs, this._actionSubscribers)
 };
 
 Store.prototype.watch = function watch (getter, cb, options) {
