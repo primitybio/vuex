@@ -21,6 +21,16 @@ export default class ModuleCollection {
     }, '')
   }
 
+  getNearestNamespacePath (path) {
+    let module = this.root
+    let match = []
+    forEachValue(path, (key, i) => {
+      module = module.getChild(key)
+      if (module.namespaced) match = path.slice(0, i + 1)
+    })
+    return match
+  }
+
   update (rawRootModule) {
     update([], this.root, rawRootModule)
   }

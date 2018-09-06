@@ -179,7 +179,7 @@ export class Store {
 
     this._modules.unregister(path)
     this._withCommit(() => {
-      const parentState = getNestedState(this.state, path.slice(0, -1))
+      const parentState = getNested(this.state, path.slice(0, -1))
       Vue.delete(parentState, path[path.length - 1])
     })
     resetStore(this)
@@ -222,21 +222,37 @@ function resetStore (store, hot) {
   resetStoreVM(store, state, hot)
 }
 
+function registerModuleGetters (store, getters, path, module, computed) {
+  const namespace = store._modules.getNamespace(path)
+
+  module.forEachGetter((_getter, key) => {
+    const computedKey = namespace + key
+    const getter = store._wrappedGetters[computedKey]
+    const descriptor = {
+      get: () => store._vm[computedKey],
+      enumerable: true // for local getters
+    }
+
+    Object.defineProperty(getters, key, descriptor)
+
+    computed[computedKey] = () => getter(store)
+  })
+
+  module.forEachChild((child, key) => {
+    const childGetters = child.namespaced ? (getters[key] = {}) : getters
+    registerModuleGetters(store, childGetters, path.concat(key), child, computed)
+  })
+
+  return computed
+}
+
 function resetStoreVM (store, state, hot) {
   const oldVm = store._vm
 
   // bind store public getters
-  store.getters = {}
-  const wrappedGetters = store._wrappedGetters
+  const getters = store.getters = {}
   const computed = {}
-  forEachValue(wrappedGetters, (fn, key) => {
-    // use computed to leverage its lazy-caching mechanism
-    computed[key] = () => fn(store)
-    Object.defineProperty(store.getters, key, {
-      get: () => store._vm[key],
-      enumerable: true // for local getters
-    })
-  })
+  registerModuleGetters(store, getters, [], store._modules.root, computed)
 
   // use a Vue instance to store the state tree
   // suppress warnings just in case the user has added
@@ -271,6 +287,7 @@ function resetStoreVM (store, state, hot) {
 function installModule (store, rootState, path, module, hot) {
   const isRoot = !path.length
   const namespace = store._modules.getNamespace(path)
+  const nearestNamespacePath = store._modules.getNearestNamespacePath(path)
 
   // register in namespace map
   if (module.namespaced) {
@@ -279,14 +296,14 @@ function installModule (store, rootState, path, module, hot) {
 
   // set state
   if (!isRoot && !hot) {
-    const parentState = getNestedState(rootState, path.slice(0, -1))
+    const parentState = getNested(rootState, path.slice(0, -1))
     const moduleName = path[path.length - 1]
     store._withCommit(() => {
       Vue.set(parentState, moduleName, module.state)
     })
   }
 
-  const local = module.context = makeLocalContext(store, namespace, path)
+  const local = module.context = makeLocalContext(store, namespace, path, nearestNamespacePath)
 
   module.forEachMutation((mutation, key) => {
     const namespacedType = namespace + key
@@ -313,7 +330,7 @@ function installModule (store, rootState, path, module, hot) {
  * make localized dispatch, commit, getters and state
  * if there is no namespace, just use root ones
  */
-function makeLocalContext (store, namespace, path) {
+function makeLocalContext (store, namespace, path, nearestNamespacePath) {
   const noNamespace = namespace === ''
 
   const local = {
@@ -354,39 +371,14 @@ function makeLocalContext (store, namespace, path) {
   // because they will be changed by vm update
   Object.defineProperties(local, {
     getters: {
-      get: noNamespace
-        ? () => store.getters
-        : () => makeLocalGetters(store, namespace)
+      get: () => getNested(store.getters, nearestNamespacePath)
     },
     state: {
-      get: () => getNestedState(store.state, path)
+      get: () => getNested(store.state, path)
     }
   })
 
   return local
-}
-
-function makeLocalGetters (store, namespace) {
-  const gettersProxy = {}
-
-  const splitPos = namespace.length
-  Object.keys(store.getters).forEach(type => {
-    // skip if the target getter is not match this namespace
-    if (type.slice(0, splitPos) !== namespace) return
-
-    // extract local getter type
-    const localType = type.slice(splitPos)
-
-    // Add a port to the getters proxy.
-    // Define as getter property because
-    // we do not want to evaluate the getters in this time.
-    Object.defineProperty(gettersProxy, localType, {
-      get: () => store.getters[type],
-      enumerable: true
-    })
-  })
-
-  return gettersProxy
 }
 
 function registerMutation (store, type, handler, local) {
@@ -446,7 +438,7 @@ function enableStrictMode (store) {
   }, { deep: true, sync: true })
 }
 
-function getNestedState (state, path) {
+function getNested (state, path) {
   return path.length
     ? path.reduce((state, key) => state[key], state)
     : state
